@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { Connection } from 'vscode-languageserver';
 import { SftpConfig, ConfigManager } from './config';
+import { buildConnectConfig } from './connect-config';
 
 export class SftpClient {
   private client: Client;
@@ -24,28 +25,10 @@ export class SftpClient {
     }
 
     try {
-      const connectConfig: any = {
-        host: this.config.host,
-        port: this.config.port || 22,
-        username: this.config.username,
-      };
-
-      // Handle authentication
-      if (this.config.password) {
-        connectConfig.password = this.config.password;
-      } else if (this.config.privateKeyPath) {
-        const keyPath = this.config.privateKeyPath.replace('~', process.env.HOME || '');
-        connectConfig.privateKey = fs.readFileSync(keyPath);
-
-        if (this.config.passphrase) {
-          connectConfig.passphrase = this.config.passphrase;
-        }
-      }
-
-      // Connection timeout
-      if (this.config.connectTimeout) {
-        connectConfig.readyTimeout = this.config.connectTimeout;
-      }
+      const connectConfig = buildConnectConfig(
+        this.config,
+        (msg) => this.connection.console.warn(msg),
+      );
 
       await this.client.connect(connectConfig);
       this.isConnected = true;

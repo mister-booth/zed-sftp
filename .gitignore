@@ -6,6 +6,7 @@ Cargo.lock
 # IDE
 .idea/
 .vscode/
+.zed/sftp.json
 *.swp
 *.swo
 *~
@@ -13,5 +14,8 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# Node
+server/node_modules/
 
 CLAUDE.md

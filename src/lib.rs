@@ -3,6 +3,10 @@ use std::{env, fs};
 use zed_extension_api as zed;
 
 const PACKAGE_NAME: &str = "zed-sftp-server";
+// SECURITY: pinned to a specific version to prevent running code from a
+// compromised or squatted npm package. Bump this constant and ship a new
+// extension release to roll out a new server version.
+const PACKAGE_VERSION: &str = "1.0.1";
 const SERVER_PATH: &str = "node_modules/zed-sftp-server/dist/index.js";
 
 struct SftpExtension {
@@ -24,31 +28,50 @@ impl SftpExtension {
             }
         }
 
-        zed::set_language_server_installation_status(
-            language_server_id,
-            &zed::LanguageServerInstallationStatus::CheckingForUpdate,
-        );
-
-        let latest_version = zed::npm_package_latest_version(PACKAGE_NAME)?;
         let installed_version = zed::npm_package_installed_version(PACKAGE_NAME)?;
 
-        if !self.server_exists() || installed_version.as_ref() != Some(&latest_version) {
+        if !self.server_exists() || installed_version.as_deref() != Some(PACKAGE_VERSION) {
             zed::set_language_server_installation_status(
                 language_server_id,
                 &zed::LanguageServerInstallationStatus::Downloading,
             );
 
-            match zed::npm_install_package(PACKAGE_NAME, &latest_version) {
+            match zed::npm_install_package(PACKAGE_NAME, PACKAGE_VERSION) {
                 Ok(()) => {
                     if !self.server_exists() {
                         return Err(format!(
                             "Installed package '{PACKAGE_NAME}' did not contain expected path '{SERVER_PATH}'"
                         ));
                     }
+                    // Supply-chain defense: verify the installed version matches
+                    // the pinned version. A compromised or squatted npm package
+                    // publishing a different version would be caught here.
+                    let post_install_version =
+                        zed::npm_package_installed_version(PACKAGE_NAME)?;
+                    if post_install_version.as_deref() != Some(PACKAGE_VERSION) {
+                        return Err(format!(
+                            "Installed version '{:?}' does not match pinned version '{}'. \
+                            Refusing to run unverified code.",
+                            post_install_version, PACKAGE_VERSION,
+                        ));
+                    }
                 }
                 Err(error) => {
                     if !self.server_exists() {
                         return Err(error);
+                    }
+                    // Install failed but a prior install exists. Verify the
+                    // existing version matches the pin; if not, refuse to run
+                    // rather than fall back to an unverified installation.
+                    let existing_version =
+                        zed::npm_package_installed_version(PACKAGE_NAME)?;
+                    if existing_version.as_deref() != Some(PACKAGE_VERSION) {
+                        return Err(format!(
+                            "Install failed and existing version '{:?}' does not match \
+                            pinned version '{}'. Refusing to run unverified code. \
+                            Original error: {}",
+                            existing_version, PACKAGE_VERSION, error,
+                        ));
                     }
                 }
             }

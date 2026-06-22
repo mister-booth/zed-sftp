@@ -1,6 +1,6 @@
 {
   "name": "zed-sftp-server",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "SFTP Language Server for Zed",
   "main": "dist/index.js",
   "files": [
@@ -9,7 +9,9 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test": "node --import tsx --test 'test/**/*.test.ts'",
+    "test:watch": "node --import tsx --test --watch 'test/**/*.test.ts'"
   },
   "keywords": [
     "zed",
@@ -29,6 +31,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ssh2-sftp-client": "^9.0.3",
+    "tsx": "^4.19.0",
     "typescript": "^5.7.2"
   }
 }

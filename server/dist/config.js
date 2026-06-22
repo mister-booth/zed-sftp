@@ -37,6 +37,7 @@ exports.ConfigManager = void 0;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const minimatch_1 = require("minimatch");
+const env_1 = require("./env");
 class ConfigManager {
     constructor(workspaceFolder) {
         this.config = null;
@@ -64,6 +65,13 @@ class ConfigManager {
             // Validate required fields
             if (!this.config) {
                 throw new Error("Config is empty");
+            }
+            if (this.config.protocol !== undefined &&
+                this.config.protocol !== "sftp") {
+                throw new Error(`Unsupported protocol: "${this.config.protocol}". ` +
+                    `This build only supports "sftp". ` +
+                    `FTP and FTPS are not implemented; remove the "protocol" field ` +
+                    `(or set it to "sftp") to use SFTP.`);
             }
             if (!this.config.host) {
                 throw new Error("Missing required field: host");
@@ -107,6 +115,10 @@ class ConfigManager {
                         this.config = { ...this.config, ...profile };
                     }
                 }
+                // Resolve env-var references in credential fields. Run AFTER
+                // profile merge so profiles can also use $VAR syntax.
+                this.config.password = (0, env_1.resolveEnv)(this.config.password);
+                this.config.passphrase = (0, env_1.resolveEnv)(this.config.passphrase);
             }
             return this.config;
         }
@@ -124,57 +136,60 @@ class ConfigManager {
         return false;
     }
     /**
-     * Check if a file is within the context path
+     * Check if a file is within the context path.
+     *
+     * Uses a separator-aware boundary check so that sibling directories
+     * which share a string prefix (e.g. `/work/site/wp-content-evil`)
+     * are NOT considered to be inside `/work/site/wp-content`.
      */
     isInContext(filePath) {
         const normalized = path.normalize(filePath);
-        const contextNormalized = path.normalize(this.contextPath);
-        return normalized.startsWith(contextNormalized);
+        let contextNormalized = path.normalize(this.contextPath);
+        // Strip a single trailing separator so we can safely append
+        // `path.sep` when forming the boundary. Preserve the filesystem
+        // root (`/` on POSIX, `C:\` on Windows) as its own boundary.
+        if (contextNormalized.length > 1 &&
+            contextNormalized.endsWith(path.sep)) {
+            contextNormalized = contextNormalized.slice(0, -path.sep.length);
+        }
+        if (normalized === contextNormalized) {
+            return true;
+        }
+        const boundary = contextNormalized + path.sep;
+        return (normalized.length > boundary.length &&
+            normalized.startsWith(boundary));
     }
     /**
-     * Get the remote path for a local file, respecting the context setting
+     * Get the remote path for a local file, respecting the context setting.
+     *
+     * Security model: the only authoritative check is `isInContext()` above,
+     * which ensures the file lives strictly under the configured context
+     * directory. `path.relative()` then resolves any `..` segments in the
+     * input before they're joined to `remotePath`, so traversal segments
+     * cannot survive to the output. We deliberately do NOT string-scan for
+     * `".."` — a file named `version..1.0.txt` is legitimate and should
+     * upload fine.
      */
     getRemotePath(localFilePath) {
         if (!this.config) {
             return null;
         }
-        // Check if file is within context
         if (!this.isInContext(localFilePath)) {
             return null;
         }
-        // Get relative path from context directory
         const relativePath = path.relative(this.contextPath, localFilePath);
-        // Security check: prevent path traversal
-        if (relativePath.includes("..")) {
-            throw new Error("Path traversal detected in file path");
-        }
         // Normalize remote path (ensure it starts with /)
         let remotePath = this.config.remotePath;
         if (!remotePath.startsWith("/")) {
             remotePath = "/" + remotePath;
         }
-        // Combine remote path with relative path (use forward slashes for remote)
-        const remoteFilePath = path.posix.join(remotePath, relativePath.split(path.sep).join("/"));
-        // Final security check on combined path
-        if (remoteFilePath.includes("..")) {
-            throw new Error("Path traversal detected in remote path");
-        }
-        return remoteFilePath;
+        return path.posix.join(remotePath, relativePath.split(path.sep).join("/"));
     }
     getConfig() {
         return this.config;
     }
     getContextPath() {
         return this.contextPath;
-    }
-    async saveConfig(config) {
-        const configDir = path.join(this.workspaceFolder, ".zed");
-        if (!fs.existsSync(configDir)) {
-            fs.mkdirSync(configDir, { recursive: true });
-        }
-        const configPath = path.join(configDir, "sftp.json");
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-        this.config = config;
     }
     async reloadConfig() {
         return this.loadConfig();

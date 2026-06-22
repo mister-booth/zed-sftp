@@ -40,6 +40,7 @@ exports.SftpClient = void 0;
 const ssh2_sftp_client_1 = __importDefault(require("ssh2-sftp-client"));
 const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
+const connect_config_1 = require("./connect-config");
 class SftpClient {
     constructor(config, connection, configManager) {
         this.isConnected = false;
@@ -53,26 +54,7 @@ class SftpClient {
             return;
         }
         try {
-            const connectConfig = {
-                host: this.config.host,
-                port: this.config.port || 22,
-                username: this.config.username,
-            };
-            // Handle authentication
-            if (this.config.password) {
-                connectConfig.password = this.config.password;
-            }
-            else if (this.config.privateKeyPath) {
-                const keyPath = this.config.privateKeyPath.replace('~', process.env.HOME || '');
-                connectConfig.privateKey = fs.readFileSync(keyPath);
-                if (this.config.passphrase) {
-                    connectConfig.passphrase = this.config.passphrase;
-                }
-            }
-            // Connection timeout
-            if (this.config.connectTimeout) {
-                connectConfig.readyTimeout = this.config.connectTimeout;
-            }
+            const connectConfig = (0, connect_config_1.buildConnectConfig)(this.config, (msg) => this.connection.console.warn(msg));
             await this.client.connect(connectConfig);
             this.isConnected = true;
             this.connection.console.log(`Connected to ${this.config.host}`);

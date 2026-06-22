@@ -11,18 +11,21 @@
     "dev": {
       "name": "Development Server",
       "host": "dev.example.com",
+      "hostKey": "SHA256:REPLACE_WITH_OUTPUT_OF_ssh-keyscan_-t_ed25519_dev.example.com",
       "remotePath": "/var/www/dev",
       "uploadOnSave": true
     },
     "staging": {
       "name": "Staging Server",
       "host": "staging.example.com",
+      "hostKey": "SHA256:REPLACE_WITH_OUTPUT_OF_ssh-keyscan_-t_ed25519_staging.example.com",
       "remotePath": "/var/www/staging",
       "uploadOnSave": false
     },
     "production": {
       "name": "Production Server",
       "host": "prod.example.com",
+      "hostKey": "SHA256:REPLACE_WITH_OUTPUT_OF_ssh-keyscan_-t_ed25519_prod.example.com",
       "remotePath": "/var/www/html",
       "uploadOnSave": false
     }

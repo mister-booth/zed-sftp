@@ -38,6 +38,7 @@ const vscode_languageserver_textdocument_1 = require("vscode-languageserver-text
 const path = __importStar(require("path"));
 const sftp_client_1 = require("./sftp-client");
 const config_1 = require("./config");
+const confirm_1 = require("./confirm");
 // Add error handlers
 process.on("uncaughtException", (error) => {
     console.error("Uncaught Exception:", error);
@@ -136,40 +137,112 @@ connection.onExecuteCommand(async (params) => {
         connection.window.showErrorMessage("SFTP not configured");
         return;
     }
+    const config = configManager.getConfig();
+    const confirmOn = config?.confirmOperations !== false;
+    const showInfo = connection.window.showInformationMessage.bind(connection.window);
     try {
         switch (params.command) {
-            case "sftp.upload":
-                if (params.arguments && params.arguments[0]) {
-                    const filePath = params.arguments[0];
-                    await sftpClient.uploadFile(filePath);
-                    connection.window.showInformationMessage(`Uploaded: ${path.basename(filePath)}`);
+            case "sftp.upload": {
+                if (!params.arguments || !params.arguments[0])
+                    return;
+                const filePath = params.arguments[0];
+                const remotePath = configManager.getRemotePath(filePath);
+                if (!remotePath) {
+                    connection.window.showErrorMessage(`File is outside context path: ${path.basename(filePath)}`);
+                    return;
                 }
-                break;
-            case "sftp.download":
-                if (params.arguments && params.arguments[0]) {
-                    const filePath = params.arguments[0];
-                    await sftpClient.downloadFile(filePath);
-                    connection.window.showInformationMessage(`Downloaded: ${path.basename(filePath)}`);
+                if (confirmOn) {
+                    const ok = await (0, confirm_1.confirmOperation)(showInfo, `Upload "${path.basename(filePath)}" to ${config?.host}:${remotePath}?`, "Yes, upload");
+                    if (!ok) {
+                        connection.console.log(`Upload cancelled: ${filePath}`);
+                        return;
+                    }
                 }
+                await sftpClient.uploadFile(filePath);
+                connection.window.showInformationMessage(`Uploaded: ${path.basename(filePath)}`);
                 break;
-            case "sftp.sync":
-                await sftpClient.syncFolder(workspaceFolder);
+            }
+            case "sftp.download": {
+                if (!params.arguments || !params.arguments[0])
+                    return;
+                const filePath = params.arguments[0];
+                const remotePath = configManager.getRemotePath(filePath);
+                if (!remotePath) {
+                    connection.window.showErrorMessage(`File is outside context path: ${path.basename(filePath)}`);
+                    return;
+                }
+                if (confirmOn) {
+                    const ok = await (0, confirm_1.confirmOperation)(showInfo, `Download "${path.basename(filePath)}" from ${config?.host}:${remotePath}? ` +
+                        `This will overwrite the local file.`, "Yes, download");
+                    if (!ok) {
+                        connection.console.log(`Download cancelled: ${filePath}`);
+                        return;
+                    }
+                }
+                await sftpClient.downloadFile(filePath);
+                connection.window.showInformationMessage(`Downloaded: ${path.basename(filePath)}`);
+                break;
+            }
+            case "sftp.sync": {
+                const folderPath = workspaceFolder;
+                const remotePath = configManager.getRemotePath(folderPath);
+                if (!remotePath) {
+                    connection.window.showErrorMessage(`Workspace folder is outside context path: ${folderPath}`);
+                    return;
+                }
+                if (confirmOn) {
+                    const ok = await (0, confirm_1.confirmOperation)(showInfo, `Sync workspace to ${config?.host}:${remotePath}? ` +
+                        `Remote files may be overwritten or deleted.`, "Yes, sync");
+                    if (!ok) {
+                        connection.console.log(`Sync cancelled: ${folderPath}`);
+                        return;
+                    }
+                }
+                await sftpClient.syncFolder(folderPath);
                 connection.window.showInformationMessage("Sync completed");
                 break;
-            case "sftp.uploadFolder":
-                if (params.arguments && params.arguments[0]) {
-                    const folderPath = params.arguments[0];
-                    await sftpClient.uploadFolder(folderPath);
-                    connection.window.showInformationMessage(`Uploaded folder: ${path.basename(folderPath)}`);
+            }
+            case "sftp.uploadFolder": {
+                if (!params.arguments || !params.arguments[0])
+                    return;
+                const folderPath = params.arguments[0];
+                const remotePath = configManager.getRemotePath(folderPath);
+                if (!remotePath) {
+                    connection.window.showErrorMessage(`Folder is outside context path: ${path.basename(folderPath)}`);
+                    return;
                 }
-                break;
-            case "sftp.downloadFolder":
-                if (params.arguments && params.arguments[0]) {
-                    const folderPath = params.arguments[0];
-                    await sftpClient.downloadFolder(folderPath);
-                    connection.window.showInformationMessage(`Downloaded folder: ${path.basename(folderPath)}`);
+                if (confirmOn) {
+                    const ok = await (0, confirm_1.confirmOperation)(showInfo, `Upload folder "${path.basename(folderPath)}" to ${config?.host}:${remotePath}?`, "Yes, upload");
+                    if (!ok) {
+                        connection.console.log(`Upload folder cancelled: ${folderPath}`);
+                        return;
+                    }
                 }
+                await sftpClient.uploadFolder(folderPath);
+                connection.window.showInformationMessage(`Uploaded folder: ${path.basename(folderPath)}`);
                 break;
+            }
+            case "sftp.downloadFolder": {
+                if (!params.arguments || !params.arguments[0])
+                    return;
+                const folderPath = params.arguments[0];
+                const remotePath = configManager.getRemotePath(folderPath);
+                if (!remotePath) {
+                    connection.window.showErrorMessage(`Folder is outside context path: ${path.basename(folderPath)}`);
+                    return;
+                }
+                if (confirmOn) {
+                    const ok = await (0, confirm_1.confirmOperation)(showInfo, `Download folder "${path.basename(folderPath)}" from ${config?.host}:${remotePath}? ` +
+                        `Local files may be overwritten.`, "Yes, download");
+                    if (!ok) {
+                        connection.console.log(`Download folder cancelled: ${folderPath}`);
+                        return;
+                    }
+                }
+                await sftpClient.downloadFolder(folderPath);
+                connection.window.showInformationMessage(`Downloaded folder: ${path.basename(folderPath)}`);
+                break;
+            }
             default:
                 connection.window.showErrorMessage(`Unknown command: ${params.command}`);
         }

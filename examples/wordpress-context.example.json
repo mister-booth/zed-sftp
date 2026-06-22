@@ -4,6 +4,7 @@
   "context": "site/wp-content/",
   "protocol": "sftp",
   "host": "example.com",
+  "hostKey": "SHA256:REPLACE_WITH_OUTPUT_OF_ssh-keyscan_-t_ed25519_example.com",
   "port": 2222,
   "username": "deploy",
   "remotePath": "/wp-content/",

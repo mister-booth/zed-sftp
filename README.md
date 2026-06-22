@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zed Extension](https://img.shields.io/badge/Zed-Extension-blue)](https://zed.dev)
 
-This is a Zed extension for SFTP/FTP file synchronization, inspired by the popular [vscode-sftp](https://github.com/Natizyskunk/vscode-sftp) extension.
+This is a Zed extension for SFTP file synchronization, inspired by the popular [vscode-sftp](https://github.com/Natizyskunk/vscode-sftp) extension.
 
 ## ✨ Features
 
@@ -92,17 +92,102 @@ Create a `.zed/sftp.json` file in your project root:
 {
   "username": "user",
   "privateKeyPath": "~/.ssh/id_rsa",
-  "passphrase": "optional-passphrase"
+  "passphrase": "$SFTP_PASSPHRASE"
 }
 ```
 
-**Password:**
+**Password (use env-var form to keep secrets out of the config file):**
 ```json
 {
   "username": "user",
-  "password": "your-password"
+  "password": "$SFTP_PASSWORD"
 }
 ```
+
+Then set the variable before launching Zed:
+```bash
+SFTP_PASSWORD='your-password' zed .
+```
+
+A literal password in the config (e.g. `"password": "hunter2"`) works but
+the file will contain the secret in plaintext. `.zed/sftp.json` is in
+`.gitignore` by default — see [Security](#security) below for details.
+
+### Host Key Verification (Required)
+
+To prevent MITM attacks, the extension **refuses to connect** unless the
+server's host key can be verified. Get your server's fingerprint once and pin
+it in your config:
+
+```bash
+# Capture the fingerprint (run once, on a trusted network)
+ssh-keyscan -t ed25519,rsa,ecdsa your-server.com | ssh-keygen -lf -
+# Output looks like:
+#   # Host your-server.com found: line 1
+#   |1|abc...|ssh-ed25519 AAAAC3...
+# Pick the line WITHOUT the "|1|" prefix, e.g.:
+#   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... your-server.com
+# Run it through ssh-keygen to get the SHA256 fingerprint:
+#   ssh-keygen -lf <(echo "ssh-ed25519 AAAAC3...")
+#   256 SHA256:pE4q7Y/...base64... your-server.com (ED25519)
+```
+
+Then add the `SHA256:` line to your config:
+
+```json
+{
+  "host": "your-server.com",
+  "hostKey": "SHA256:pE4q7Y/...base64..."
+}
+```
+
+If you have an existing `~/.ssh/known_hosts`, you can point the extension at
+it instead via `"knownHostsPath": "~/.ssh/known_hosts"`.
+
+To explicitly disable verification (NOT recommended — only for trusted local
+networks / testing), set `"verifyHostKey": false`. A warning is logged on
+every connection.
+
+### Security
+
+**Don't commit secrets.** The config file may contain passwords or
+passphrases. `.zed/sftp.json` is in `.gitignore` by default, but this
+only protects against `git add` — it does not protect the file from
+other distribution channels (shell history, backup tools, screen
+sharing, etc.). For real protection, use the env-var syntax below.
+
+**Reference env vars instead of inlining secrets.** Any value starting
+with `$` followed by a valid env-var name is resolved from
+`process.env` at config load. Supported fields: `password`,
+`passphrase`. (Profiles are merged first, then env vars resolved.)
+
+```json
+{
+  "host": "example.com",
+  "username": "deploy",
+  "password": "$SFTP_PASSWORD",
+  "remotePath": "/var/www/html"
+}
+```
+
+```bash
+SFTP_PASSWORD='...' zed .
+```
+
+If the referenced variable is not set, the extension fails to load with
+a clear error rather than silently passing an empty password.
+
+**SSH keys are still preferred** over passwords. Passphrases can use
+the same `$VAR` form.
+
+**Algorithm choices.** The `algorithms` block lets you constrain the
+key-exchange, cipher, host-key, and HMAC algorithms that ssh2 will
+accept. The example uses ssh2's preferred order — Curve25519 first,
+AES-GCM and ChaCha20 ciphers, ETM HMACs, ED25519 host keys. SHA-1
+algorithms (`ssh-rsa`, `hmac-sha1`, `diffie-hellman-group14-sha1`)
+are deprecated and are **not** in the example. Only customize this
+block if you're connecting to a very old server that doesn't support
+the modern algorithms.
 
 ### Multiple Profiles
 
@@ -165,12 +250,20 @@ Use the command palette (`Cmd+Shift+P` / `Ctrl+Shift+P`) to run:
 - **SFTP: Download Folder** - Download entire folder
 - **SFTP: Sync** - Sync local to remote
 
+Each manual command shows a confirmation dialog showing the host and the
+remote path before doing anything. Click "Yes, upload" / "Yes, download" /
+"Yes, sync" to proceed, or dismiss to cancel. Downloads and sync warn
+that they may overwrite existing files.
+
+To disable the confirmation prompts, set `"confirmOperations": false`
+in your config. (`uploadOnSave` does not prompt — it has its own opt-in.)
+
 ### Configuration Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `name` | string | - | Connection name |
-| `protocol` | string | `sftp` | Protocol: `sftp`, `ftp`, or `ftps` |
+| `protocol` | string | `sftp` | Protocol: only `sftp` is supported. Setting `ftp` or `ftps` causes config load to fail. |
 | `host` | string | **required** | Server hostname |
 | `port` | number | `22` | Server port |
 | `username` | string | **required** | Username |
@@ -181,9 +274,13 @@ Use the command palette (`Cmd+Shift+P` / `Ctrl+Shift+P`) to run:
 | `localPath` | string | workspace | Local directory path |
 | `context` | string | - | Local subdirectory to use as root (e.g., `"site/wp-content/"`) |
 | `uploadOnSave` | boolean | `false` | Auto-upload on save |
+| `confirmOperations` | boolean | `true` | Prompt before each manual upload/download/sync. Set to `false` to skip. Does not affect `uploadOnSave`. |
 | `ignore` | string[] | `[]` | Ignore patterns (glob) |
 | `concurrency` | number | `4` | Max concurrent transfers |
 | `connectTimeout` | number | `10000` | Connection timeout (ms) |
+| `hostKey` | string | - | SHA256 fingerprint of the server's host key (e.g. `"SHA256:pE4q7Y..."`). **Required unless `knownHostsPath` is set or `verifyHostKey` is `false`.** |
+| `knownHostsPath` | string | - | Path to an OpenSSH-style `known_hosts` file for host key verification. |
+| `verifyHostKey` | boolean | `true` | Set to `false` to explicitly disable host key verification (INSECURE — only for trusted local networks / testing). |
 
 ## 📚 Documentation
 
@@ -343,7 +440,7 @@ When Zed supports file system extensions, the configuration might look like:
 
 ## Features from vscode-sftp That Would Be Implemented
 
-- ✅ SFTP/FTP/FTPS protocols
+- ✅ SFTP protocol (FTP/FTPS not yet implemented)
 - ✅ Upload on save
 - ✅ Download files/folders
 - ✅ Upload files/folders
@@ -418,7 +515,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for detailed development instructions.
 
 - [ ] Remote file explorer
 - [ ] Diff with remote files
-- [ ] FTP/FTPS protocol support
+- [ ] FTP/FTPS protocol support (currently rejected at config load; SFTP only)
 - [ ] File system watcher (beyond save events)
 - [ ] Progress indicators
 - [ ] Conflict resolution
@@ -454,4 +551,3 @@ MIT License - See [LICENSE](LICENSE) for details
 ---
 
 **Made with ❤️ for the Zed community**
-

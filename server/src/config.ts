@@ -1,10 +1,31 @@
 import * as fs from "fs";
 import * as path from "path";
 import { minimatch } from "minimatch";
+import { resolveEnv } from "./env";
 
+/**
+ * SFTP / FTP / FTPS connection configuration.
+ *
+ * Fields consumed by ssh2 (passed via `buildConnectConfig`):
+ *   host, port, username, password, privateKeyPath, passphrase,
+ *   hostKey, knownHostsPath, verifyHostKey, algorithms, connectTimeout
+ *
+ * Fields NOT consumed by ssh2 (used elsewhere in the extension):
+ *   name, protocol, remotePath, localPath, context, uploadOnSave,
+ *   downloadOnOpen, ignore, concurrency, keepalive, interactiveAuth,
+ *   watcher, profiles, defaultProfile
+ *
+ * If you add a field here that should be sent to ssh2, wire it in
+ * `connect-config.ts` and add a test in `connect-config.test.ts`.
+ */
 export interface SftpConfig {
 	name?: string;
-	protocol: "sftp" | "ftp" | "ftps";
+	/**
+	 * Connection protocol. Only `"sftp"` is implemented; the field is
+	 * optional and defaults to SFTP. Setting `"ftp"` or `"ftps"` causes
+	 * config load to fail with a clear error.
+	 */
+	protocol?: "sftp";
 	host: string;
 	port?: number;
 	username: string;
@@ -16,6 +37,13 @@ export interface SftpConfig {
 	context?: string; // Local subdirectory to use as root (e.g., "site/wp-content/")
 	uploadOnSave?: boolean;
 	downloadOnOpen?: boolean;
+	/**
+	 * Prompt for confirmation before each manual upload/download/sync.
+	 * Defaults to `true`. Set to `false` to skip the confirmation dialog.
+	 * Note: this only affects commands invoked from the command palette;
+	 * `uploadOnSave` does not prompt.
+	 */
+	confirmOperations?: boolean;
 	ignore?: string[];
 	concurrency?: number;
 	connectTimeout?: number;
@@ -27,6 +55,23 @@ export interface SftpConfig {
 		serverHostKey?: string[];
 		hmac?: string[];
 	};
+	/**
+	 * SHA256 fingerprint of the expected server host key, as printed by
+	 * `ssh-keygen -lf`. Example: "SHA256:pE4q7Y/...base64...".
+	 * Required unless `knownHostsPath` is set or `verifyHostKey` is `false`.
+	 */
+	hostKey?: string;
+	/**
+	 * Path to an OpenSSH-style known_hosts file. If set, takes precedence
+	 * over `hostKey`.
+	 */
+	knownHostsPath?: string;
+	/**
+	 * Set to `false` to explicitly disable host key verification (INSECURE).
+	 * Defaults to `true`. When `true`, either `hostKey` or `knownHostsPath`
+	 * must be configured.
+	 */
+	verifyHostKey?: boolean;
 	watcher?: {
 		files?: string;
 		autoUpload?: boolean;
@@ -73,6 +118,18 @@ export class ConfigManager {
 			// Validate required fields
 			if (!this.config) {
 				throw new Error("Config is empty");
+			}
+
+			if (
+				this.config.protocol !== undefined &&
+				this.config.protocol !== "sftp"
+			) {
+				throw new Error(
+					`Unsupported protocol: "${this.config.protocol}". ` +
+					`This build only supports "sftp". ` +
+					`FTP and FTPS are not implemented; remove the "protocol" field ` +
+					`(or set it to "sftp") to use SFTP.`,
+				);
 			}
 
 			if (!this.config.host) {
@@ -124,6 +181,11 @@ export class ConfigManager {
 						this.config = { ...this.config, ...profile };
 					}
 				}
+
+				// Resolve env-var references in credential fields. Run AFTER
+				// profile merge so profiles can also use $VAR syntax.
+				this.config.password = resolveEnv(this.config.password);
+				this.config.passphrase = resolveEnv(this.config.passphrase);
 			}
 
 			return this.config;
@@ -145,34 +207,58 @@ export class ConfigManager {
 	}
 
 	/**
-	 * Check if a file is within the context path
+	 * Check if a file is within the context path.
+	 *
+	 * Uses a separator-aware boundary check so that sibling directories
+	 * which share a string prefix (e.g. `/work/site/wp-content-evil`)
+	 * are NOT considered to be inside `/work/site/wp-content`.
 	 */
 	isInContext(filePath: string): boolean {
 		const normalized = path.normalize(filePath);
-		const contextNormalized = path.normalize(this.contextPath);
-		return normalized.startsWith(contextNormalized);
+		let contextNormalized = path.normalize(this.contextPath);
+
+		// Strip a single trailing separator so we can safely append
+		// `path.sep` when forming the boundary. Preserve the filesystem
+		// root (`/` on POSIX, `C:\` on Windows) as its own boundary.
+		if (
+			contextNormalized.length > 1 &&
+			contextNormalized.endsWith(path.sep)
+		) {
+			contextNormalized = contextNormalized.slice(0, -path.sep.length);
+		}
+
+		if (normalized === contextNormalized) {
+			return true;
+		}
+
+		const boundary = contextNormalized + path.sep;
+		return (
+			normalized.length > boundary.length &&
+			normalized.startsWith(boundary)
+		);
 	}
 
 	/**
-	 * Get the remote path for a local file, respecting the context setting
+	 * Get the remote path for a local file, respecting the context setting.
+	 *
+	 * Security model: the only authoritative check is `isInContext()` above,
+	 * which ensures the file lives strictly under the configured context
+	 * directory. `path.relative()` then resolves any `..` segments in the
+	 * input before they're joined to `remotePath`, so traversal segments
+	 * cannot survive to the output. We deliberately do NOT string-scan for
+	 * `".."` — a file named `version..1.0.txt` is legitimate and should
+	 * upload fine.
 	 */
 	getRemotePath(localFilePath: string): string | null {
 		if (!this.config) {
 			return null;
 		}
 
-		// Check if file is within context
 		if (!this.isInContext(localFilePath)) {
 			return null;
 		}
 
-		// Get relative path from context directory
 		const relativePath = path.relative(this.contextPath, localFilePath);
-
-		// Security check: prevent path traversal
-		if (relativePath.includes("..")) {
-			throw new Error("Path traversal detected in file path");
-		}
 
 		// Normalize remote path (ensure it starts with /)
 		let remotePath = this.config.remotePath;
@@ -180,15 +266,10 @@ export class ConfigManager {
 			remotePath = "/" + remotePath;
 		}
 
-		// Combine remote path with relative path (use forward slashes for remote)
-		const remoteFilePath = path.posix.join(remotePath, relativePath.split(path.sep).join("/"));
-
-		// Final security check on combined path
-		if (remoteFilePath.includes("..")) {
-			throw new Error("Path traversal detected in remote path");
-		}
-
-		return remoteFilePath;
+		return path.posix.join(
+			remotePath,
+			relativePath.split(path.sep).join("/"),
+		);
 	}
 
 	getConfig(): SftpConfig | null {
@@ -197,18 +278,6 @@ export class ConfigManager {
 
 	getContextPath(): string {
 		return this.contextPath;
-	}
-
-	async saveConfig(config: SftpConfig): Promise<void> {
-		const configDir = path.join(this.workspaceFolder, ".zed");
-
-		if (!fs.existsSync(configDir)) {
-			fs.mkdirSync(configDir, { recursive: true });
-		}
-
-		const configPath = path.join(configDir, "sftp.json");
-		fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-		this.config = config;
 	}
 
 	async reloadConfig(): Promise<SftpConfig | null> {
