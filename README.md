@@ -7,7 +7,6 @@ This is a Zed extension for SFTP file synchronization, inspired by the popular [
 
 ## ✨ Features
 
-Testing.
 - **Upload on Save** - Automatically upload files when you save them
 - **Manual Upload/Download** - Upload or download files and folders on demand
 - **Sync Folders** - Synchronize entire directories between local and remote
